@@ -1,0 +1,21 @@
+{
+  "db_path": "C:/Users/YourName/Documents/onec-config-mcp/index.db",
+  "configs": [
+    {
+      "name": "МояКонфигурация",
+      "path": "C:/path/to/exported/config/src",
+      "is_bsl": false,
+      "watch": true
+    },
+    {
+      "name": "БП",
+      "path": "C:/path/to/exported/acc30",
+      "is_bsl": false
+    },
+    {
+      "name": "БСП",
+      "path": "C:/path/to/exported/bsl",
+      "is_bsl": true
+    }
+  ]
+}
