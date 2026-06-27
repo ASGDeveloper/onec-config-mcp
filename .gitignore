@@ -1,0 +1,18 @@
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Local config with personal paths
+config.json
+
+# Logs
+server.log
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+dist/
+build/
