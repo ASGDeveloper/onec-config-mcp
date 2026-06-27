@@ -21,7 +21,7 @@ MCP-сервер для поиска по исходному коду конфи
 ## Установка
 
 ```bash
-git clone https://github.com/your-username/onec-config-mcp
+git clone https://github.com/ASGDeveloper/onec-config-mcp
 cd onec-config-mcp
 pip install -e .
 ```
