@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import socket
 import threading
+from datetime import datetime
 from pathlib import Path
 
 import mcp.server.stdio
@@ -31,6 +33,23 @@ _db_path: str = ""
 
 log = logging.getLogger("onec-config-mcp")
 
+# Guards against duplicate watchdog/reindex when both Claude Code and Claude
+# Desktop launch their own server.py process against the same config folder.
+_SINGLETON_PORT = 47601
+_singleton_socket: socket.socket | None = None
+
+
+def _acquire_singleton_lock() -> bool:
+    global _singleton_socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", _SINGLETON_PORT))
+    except OSError:
+        s.close()
+        return False
+    _singleton_socket = s  # kept open for process lifetime to hold the lock
+    return True
+
 
 def _conn():
     return db.get_connection(_db_path)
@@ -38,14 +57,15 @@ def _conn():
 
 # --- Watchdog ---
 
-DEBOUNCE_SECONDS = 3.0
+DEBOUNCE_SECONDS = 10.0
 
 
 class _ConfigHandler(FileSystemEventHandler):
     def __init__(self, config: dict):
         self._config = config
         self._timer: threading.Timer | None = None
-        self._lock = threading.Lock()
+        self._debounce_lock = threading.Lock()
+        self._reindex_lock = threading.Lock()
 
     def on_any_event(self, event):
         if event.is_directory:
@@ -53,7 +73,7 @@ class _ConfigHandler(FileSystemEventHandler):
         path = event.src_path
         if not (path.endswith(".bsl") or path.endswith(".xml")):
             return
-        with self._lock:
+        with self._debounce_lock:
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(DEBOUNCE_SECONDS, self._reindex)
@@ -62,14 +82,51 @@ class _ConfigHandler(FileSystemEventHandler):
 
     def _reindex(self):
         name = self._config["name"]
-        log.info(f"[watcher] Re-indexing {name}...")
+        if not self._reindex_lock.acquire(blocking=False):
+            log.info(f"[watcher] {name}: reindex already in progress, skipping")
+            return
         try:
+            log.info(f"[watcher] Re-indexing {name}...")
             conn = db.get_connection(_db_path, timeout=30)
             p.index_config(conn, self._config)
             conn.close()
             log.info(f"[watcher] {name} re-indexed OK")
         except Exception as e:
             log.error(f"[watcher] Re-index failed for {name}: {e}", exc_info=True)
+        finally:
+            self._reindex_lock.release()
+
+
+def _startup_reindex(configs: list[dict]) -> None:
+    watched = [c for c in configs if c.get("watch") and Path(c["path"]).exists()]
+    if not watched:
+        return
+    conn = db.get_connection(_db_path)
+    for cfg in watched:
+        name = cfg["name"]
+        row = conn.execute(
+            "SELECT indexed_at FROM index_runs WHERE config_name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            log.info(f"[startup] {name}: no index found, indexing...")
+        else:
+            indexed_at = datetime.fromisoformat(row["indexed_at"])
+            config_path = Path(cfg["path"])
+            max_mtime = max(
+                (f.stat().st_mtime for f in config_path.rglob("*")
+                 if f.suffix in (".bsl", ".xml")),
+                default=0,
+            )
+            if max_mtime <= indexed_at.timestamp():
+                log.info(f"[startup] {name}: up to date, skipping")
+                continue
+            log.info(f"[startup] {name}: files changed, re-indexing...")
+        try:
+            p.index_config(conn, cfg)
+            log.info(f"[startup] {name}: done")
+        except Exception as e:
+            log.error(f"[startup] {name}: failed: {e}", exc_info=True)
+    conn.close()
 
 
 def _start_watchers(configs: list[dict]) -> Observer | None:
@@ -211,8 +268,12 @@ def main() -> None:
     log.info(f"Server starting, db_path={_db_path}")
     db.ensure_schema(_db_path)
 
-    _start_watchers(_config["configs"])
-    log.info("Server ready")
+    if _acquire_singleton_lock():
+        _startup_reindex(_config["configs"])
+        _start_watchers(_config["configs"])
+        log.info("Server ready (primary instance, watching for changes)")
+    else:
+        log.info("Server ready (secondary instance, another process already watches for changes)")
 
     async def _run():
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
