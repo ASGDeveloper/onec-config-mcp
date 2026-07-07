@@ -7,7 +7,7 @@ _DDL = [
         config_name TEXT NOT NULL,
         obj_type    TEXT NOT NULL,
         obj_name    TEXT NOT NULL,
-        is_bsl      INTEGER NOT NULL DEFAULT 0,
+        is_ssl      INTEGER NOT NULL DEFAULT 0,
         xml_path    TEXT,
         xml_summary TEXT,
         UNIQUE(config_name, obj_type, obj_name)
@@ -28,7 +28,7 @@ _DDL = [
         config_name UNINDEXED,
         obj_type    UNINDEXED,
         obj_name    UNINDEXED,
-        is_bsl      UNINDEXED,
+        is_ssl      UNINDEXED,
         module_type UNINDEXED,
         form_name   UNINDEXED,
         file_path   UNINDEXED,
@@ -37,8 +37,8 @@ _DDL = [
     )""",
     # Insert fts_modules with rowid = modules.id so deletion is simply rowid = OLD.id
     """CREATE TRIGGER IF NOT EXISTS modules_ai AFTER INSERT ON modules BEGIN
-        INSERT INTO fts_modules(rowid, config_name, obj_type, obj_name, is_bsl, module_type, form_name, file_path, content)
-        SELECT NEW.id, o.config_name, o.obj_type, o.obj_name, o.is_bsl,
+        INSERT INTO fts_modules(rowid, config_name, obj_type, obj_name, is_ssl, module_type, form_name, file_path, content)
+        SELECT NEW.id, o.config_name, o.obj_type, o.obj_name, o.is_ssl,
                NEW.module_type, COALESCE(NEW.form_name, ''), NEW.file_path, NEW.content
         FROM objects o WHERE o.id = NEW.object_id;
     END""",

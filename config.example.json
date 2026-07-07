@@ -4,18 +4,18 @@
     {
       "name": "МояКонфигурация",
       "path": "C:/path/to/exported/config/src",
-      "is_bsl": false,
+      "is_ssl": false,
       "watch": true
     },
     {
       "name": "БП",
       "path": "C:/path/to/exported/acc30",
-      "is_bsl": false
+      "is_ssl": false
     },
     {
       "name": "БСП",
       "path": "C:/path/to/exported/bsl",
-      "is_bsl": true
+      "is_ssl": true
     }
   ]
 }

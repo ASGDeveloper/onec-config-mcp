@@ -6,7 +6,7 @@ def search_code(conn: sqlite3.Connection, args: dict) -> list[dict]:
     query = args.get("query", "")
     config_name = args.get("config_name")
     obj_type = args.get("obj_type")
-    is_bsl = args.get("is_bsl")
+    is_ssl = args.get("is_ssl")
     limit = int(args.get("limit", 20))
 
     # FTS5 filter expressions (column:value syntax for UNINDEXED columns not searchable,
@@ -20,16 +20,16 @@ def search_code(conn: sqlite3.Connection, args: dict) -> list[dict]:
     if obj_type is not None:
         post_filters.append("obj_type = ?")
         params.append(obj_type)
-    if is_bsl is not None:
-        post_filters.append("is_bsl = ?")
-        params.append(str(int(is_bsl)))
+    if is_ssl is not None:
+        post_filters.append("is_ssl = ?")
+        params.append(str(int(is_ssl)))
 
     params.append(limit)
     extra = ("AND " + " AND ".join(post_filters)) if post_filters else ""
 
     rows = conn.execute(
         f"""SELECT
-                config_name, obj_type, obj_name, is_bsl,
+                config_name, obj_type, obj_name, is_ssl,
                 module_type, form_name, file_path,
                 snippet(fts_modules, 7, '>>>', '<<<', '...', 32) AS snippet
             FROM fts_modules
@@ -60,7 +60,7 @@ def find_object(conn: sqlite3.Connection, args: dict) -> list[dict]:
     where_extra = ("AND " + " AND ".join(extra_filters)) if extra_filters else ""
 
     rows = conn.execute(
-        f"""SELECT o.id, o.config_name, o.obj_type, o.obj_name, o.is_bsl, o.xml_summary
+        f"""SELECT o.id, o.config_name, o.obj_type, o.obj_name, o.is_ssl, o.xml_summary
             FROM fts_objects
             JOIN objects o ON fts_objects.rowid = o.id
             WHERE fts_objects MATCH ?
@@ -93,7 +93,7 @@ def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
     where = " AND ".join(filters)
     rows = conn.execute(
         f"""SELECT m.content, m.file_path, m.module_type, m.form_name, m.line_count,
-                   o.config_name, o.obj_type, o.obj_name, o.is_bsl
+                   o.config_name, o.obj_type, o.obj_name, o.is_ssl
             FROM modules m
             JOIN objects o ON m.object_id = o.id
             WHERE {where}
@@ -120,7 +120,7 @@ def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
 def list_objects(conn: sqlite3.Connection, args: dict) -> list[dict]:
     obj_type = args.get("obj_type")
     config_name = args.get("config_name")
-    is_bsl = args.get("is_bsl")
+    is_ssl = args.get("is_ssl")
 
     filters = []
     params: list = []
@@ -130,14 +130,14 @@ def list_objects(conn: sqlite3.Connection, args: dict) -> list[dict]:
     if config_name:
         filters.append("config_name = ?")
         params.append(config_name)
-    if is_bsl is not None:
-        filters.append("is_bsl = ?")
-        params.append(int(is_bsl))
+    if is_ssl is not None:
+        filters.append("is_ssl = ?")
+        params.append(int(is_ssl))
 
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
 
     rows = conn.execute(
-        f"""SELECT o.config_name, o.obj_type, o.obj_name, o.is_bsl,
+        f"""SELECT o.config_name, o.obj_type, o.obj_name, o.is_ssl,
                    COUNT(m.id) AS module_count
             FROM objects o
             LEFT JOIN modules m ON m.object_id = o.id

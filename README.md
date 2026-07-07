@@ -37,13 +37,13 @@ pip install -e .
     {
       "name": "МояКонфигурация",
       "path": "C:/path/to/exported/config",
-      "is_bsl": false,
+      "is_ssl": false,
       "watch": true
     },
     {
       "name": "БСП",
       "path": "C:/path/to/bsl-library",
-      "is_bsl": true
+      "is_ssl": true
     }
   ]
 }
@@ -54,7 +54,7 @@ pip install -e .
 | `db_path` | Путь к файлу базы данных SQLite (будет создан автоматически) |
 | `name` | Имя конфигурации (используется как фильтр в инструментах) |
 | `path` | Путь к корню выгруженной конфигурации |
-| `is_bsl` | `true` — конфигурация является BSL-библиотекой (БСП) |
+| `is_ssl` | `true` — конфигурация является BSL-библиотекой (БСП) |
 | `watch` | `true` — автоматически переиндексировать при изменении файлов |
 
 **Важно:** `db_path` не должен находиться в `AppData\Local` — Claude Code работает в UWP-sandbox и перенаправляет этот путь. Используйте папку `Documents` или другое место.
@@ -116,7 +116,7 @@ python indexer.py --stats
 query       — текст или FTS5-выражение ("ПроверитьПрава" OR "CheckRights")
 config_name — фильтр по конфигурации (опционально)
 obj_type    — фильтр по типу объекта: CommonModules, Catalogs, Documents, ...
-is_bsl      — true/false — фильтр по BSL-библиотеке
+is_ssl      — true/false — фильтр по BSL-библиотеке
 limit       — максимум результатов (по умолчанию 20)
 ```
 

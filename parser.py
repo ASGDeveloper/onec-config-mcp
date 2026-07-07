@@ -42,7 +42,7 @@ def extract_xml_summary(xml_path: Path) -> str:
 def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
     config_name = config["name"]
     config_path = Path(config["path"])
-    is_bsl = int(config.get("is_bsl", False))
+    is_ssl = int(config.get("is_ssl", False))
 
     # Delete existing data for this config (CASCADE removes modules; FTS triggers fire)
     conn.execute("DELETE FROM objects WHERE config_name = ?", (config_name,))
@@ -64,9 +64,9 @@ def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
 
             conn.execute(
                 """INSERT OR REPLACE INTO objects
-                   (config_name, obj_type, obj_name, is_bsl, xml_path, xml_summary)
+                   (config_name, obj_type, obj_name, is_ssl, xml_path, xml_summary)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (config_name, obj_type, obj_name, is_bsl,
+                (config_name, obj_type, obj_name, is_ssl,
                  str(xml_path) if xml_path.exists() else None,
                  xml_summary),
             )
@@ -111,9 +111,9 @@ def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
             obj_type = "Configuration"
             conn.execute(
                 """INSERT OR IGNORE INTO objects
-                   (config_name, obj_type, obj_name, is_bsl, xml_path, xml_summary)
+                   (config_name, obj_type, obj_name, is_ssl, xml_path, xml_summary)
                    VALUES (?, ?, ?, ?, NULL, ?)""",
-                (config_name, obj_type, obj_name, is_bsl, "Root configuration modules"),
+                (config_name, obj_type, obj_name, is_ssl, "Root configuration modules"),
             )
             obj_id_row = conn.execute(
                 "SELECT id FROM objects WHERE config_name=? AND obj_type=? AND obj_name=?",
