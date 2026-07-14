@@ -28,6 +28,12 @@ def main() -> None:
         for row in rows:
             print(f"  {row['config_name']:20s}  {row['obj_count']:5d} objects  "
                   f"{row['file_count']:5d} files  indexed {row['indexed_at']}")
+        indexed_names = {row["config_name"] for row in rows}
+        not_indexed = [c["name"] for c in config["configs"] if c["name"] not in indexed_names]
+        if not_indexed:
+            print("Не проиндексированы:")
+            for name in not_indexed:
+                print(f"  {name}")
         conn.close()
         return
 
