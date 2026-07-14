@@ -92,7 +92,7 @@ def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
 
     where = " AND ".join(filters)
     rows = conn.execute(
-        f"""SELECT m.content, m.file_path, m.module_type, m.form_name, m.line_count,
+        f"""SELECT m.content, m.file_path, m.module_type, m.form_name, m.line_count, m.xml_summary,
                    o.config_name, o.obj_type, o.obj_name, o.is_ssl
             FROM modules m
             JOIN objects o ON m.object_id = o.id
@@ -222,7 +222,7 @@ def get_object_metadata(conn: sqlite3.Connection, args: dict) -> dict | list[dic
     results = []
     for obj in obj_rows:
         modules = conn.execute(
-            "SELECT module_type, form_name, line_count FROM modules WHERE object_id = ? ORDER BY module_type",
+            "SELECT module_type, form_name, line_count, xml_summary FROM modules WHERE object_id = ? ORDER BY module_type",
             (obj["id"],),
         ).fetchall()
         results.append({

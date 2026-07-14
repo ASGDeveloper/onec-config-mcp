@@ -39,6 +39,99 @@ def extract_xml_summary(xml_path: Path) -> str:
         return ""
 
 
+MAX_FORM_SUMMARY_LEN = 4000
+MAX_FORM_ELEMENTS = 60
+
+
+def _extract_logform_summary(logform_xml_path: Path) -> str:
+    """Parse a form's Ext/Form.xml (namespace xcf/logform): attributes, commands,
+    child elements (with DataPath bindings) and top-level event handlers."""
+    try:
+        tree = etree.parse(str(logform_xml_path))
+        root = tree.getroot()
+
+        attrs = []
+        for attr_el in root.iter():
+            if etree.QName(attr_el.tag).localname != "Attribute":
+                continue
+            name = attr_el.get("name")
+            if name:
+                attrs.append(name)
+
+        commands = []
+        for cmd_el in root.iter():
+            if etree.QName(cmd_el.tag).localname != "Command":
+                continue
+            name = cmd_el.get("name")
+            if name:
+                commands.append(name)
+
+        events = []
+        for events_el in root.iter():
+            if etree.QName(events_el.tag).localname != "Events":
+                continue
+            for event_el in events_el:
+                if etree.QName(event_el.tag).localname != "Event":
+                    continue
+                event_name = event_el.get("name")
+                handler = (event_el.text or "").strip()
+                if event_name and handler:
+                    events.append(f"{event_name}->{handler}")
+
+        elements = []
+        for el in root.iter():
+            tag = etree.QName(el.tag).localname
+            if tag in ("Attribute", "Command", "Event", "Form"):
+                continue
+            name = el.get("name")
+            if not name:
+                continue
+            data_path = None
+            for child in el:
+                if etree.QName(child.tag).localname == "DataPath" and child.text:
+                    data_path = child.text.strip()
+                    break
+            elements.append(f"{name}({tag}->{data_path})" if data_path else f"{name}({tag})")
+
+        parts = []
+        if attrs:
+            parts.append("Attrs: " + ", ".join(dict.fromkeys(attrs)))
+        if commands:
+            parts.append("Commands: " + ", ".join(dict.fromkeys(commands)))
+        if elements:
+            deduped = list(dict.fromkeys(elements))
+            truncated_note = ""
+            if len(deduped) > MAX_FORM_ELEMENTS:
+                truncated_note = f" (+{len(deduped) - MAX_FORM_ELEMENTS} more)"
+                deduped = deduped[:MAX_FORM_ELEMENTS]
+            parts.append("Elements: " + ", ".join(deduped) + truncated_note)
+        if events:
+            parts.append("Events: " + ", ".join(dict.fromkeys(events)))
+
+        return " | ".join(parts)
+    except Exception:
+        return ""
+
+
+def extract_form_summary(form_xml_path: Path | None, logform_xml_path: Path | None) -> str:
+    """Build a searchable text summary for a form from its sibling descriptor
+    (Forms/<Name>.xml) and its logform layout (<form_dir>/Ext/Form.xml)."""
+    parts = []
+    if form_xml_path and form_xml_path.exists():
+        summary = extract_xml_summary(form_xml_path)
+        if summary:
+            parts.append(summary)
+    if logform_xml_path and logform_xml_path.exists():
+        summary = _extract_logform_summary(logform_xml_path)
+        if summary:
+            parts.append(summary)
+
+    result = " | ".join(parts)
+    if len(result) > MAX_FORM_SUMMARY_LEN:
+        result = result[:MAX_FORM_SUMMARY_LEN] + "..."
+    return result
+
+
 def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
     config_name = config["name"]
     config_path = Path(config["path"])
@@ -91,16 +184,31 @@ def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
                 _insert_module(conn, obj_id, "SessionModule", None, session_bsl)
                 file_count += 1
 
-            # Form modules: Forms/<FormName>/Ext/Form/Module.bsl
+            # CommonForms: the object dir *is* the form dir (Ext/Form/Module.bsl,
+            # Ext/Form.xml), unlike SIMPLE_MODULES's flat Ext/Module.bsl layout.
+            if obj_type == "CommonForms":
+                inserted = _index_form(
+                    conn, obj_id, form_name=obj_name, form_dir=item,
+                    form_meta_xml=xml_path if xml_path.exists() else None,
+                )
+                if inserted:
+                    file_count += 1
+
+            # Owned forms: Forms/<FormName>/Ext/Form/Module.bsl (+ Ext/Form.xml).
+            # Every form dir gets indexed, even ones with no code, so their
+            # metadata (attributes/commands/elements) is still searchable.
             forms_dir = item / "Forms"
             if forms_dir.exists():
                 for form_dir in forms_dir.iterdir():
                     if not form_dir.is_dir():
                         continue
                     form_name = form_dir.name
-                    form_module = form_dir / "Ext" / "Form" / "Module.bsl"
-                    if form_module.exists():
-                        _insert_module(conn, obj_id, "FormModule", form_name, form_module)
+                    form_meta_xml = forms_dir / f"{form_name}.xml"
+                    inserted = _index_form(
+                        conn, obj_id, form_name=form_name, form_dir=form_dir,
+                        form_meta_xml=form_meta_xml if form_meta_xml.exists() else None,
+                    )
+                    if inserted:
                         file_count += 1
 
     # Root-level modules: Ext/SessionModule.bsl, Ext/ManagedApplicationModule.bsl, etc.
@@ -134,18 +242,55 @@ def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
     return obj_count, file_count
 
 
+def _index_form(
+    conn: sqlite3.Connection,
+    obj_id: int,
+    form_name: str,
+    form_dir: Path,
+    form_meta_xml: Path | None,
+) -> bool:
+    """Insert a modules row for a form, whether or not it has a Module.bsl.
+    Returns True if a form module (.bsl) file was found (for file_count)."""
+    form_module = form_dir / "Ext" / "Form" / "Module.bsl"
+    logform_xml = form_dir / "Ext" / "Form.xml"
+
+    xml_summary = extract_form_summary(
+        form_meta_xml, logform_xml if logform_xml.exists() else None
+    )
+
+    if form_module.exists():
+        content = form_module.read_text(encoding="utf-8-sig")
+        file_path = form_module
+        has_module = True
+    else:
+        content = ""
+        # No Module.bsl to key off of - fall back to another path unique to
+        # this form so modules.file_path (UNIQUE) doesn't collide across forms.
+        file_path = logform_xml if logform_xml.exists() else form_dir
+        has_module = False
+
+    _insert_module(
+        conn, obj_id, "FormModule", form_name, file_path,
+        content=content, xml_summary=xml_summary or None,
+    )
+    return has_module
+
+
 def _insert_module(
     conn: sqlite3.Connection,
     obj_id: int,
     module_type: str,
     form_name: str | None,
     bsl_path: Path,
+    content: str | None = None,
+    xml_summary: str | None = None,
 ) -> None:
-    content = bsl_path.read_text(encoding="utf-8-sig")
-    line_count = content.count("\n") + 1
+    if content is None:
+        content = bsl_path.read_text(encoding="utf-8-sig")
+    line_count = content.count("\n") + 1 if content else 0
     conn.execute(
         """INSERT OR REPLACE INTO modules
-           (object_id, module_type, form_name, file_path, content, line_count)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (obj_id, module_type, form_name, str(bsl_path), content, line_count),
+           (object_id, module_type, form_name, file_path, content, line_count, xml_summary)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (obj_id, module_type, form_name, str(bsl_path), content, line_count, xml_summary),
     )

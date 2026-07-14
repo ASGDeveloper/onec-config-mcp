@@ -21,7 +21,8 @@ _DDL = [
         form_name   TEXT,
         file_path   TEXT NOT NULL UNIQUE,
         content     TEXT NOT NULL,
-        line_count  INTEGER NOT NULL DEFAULT 0
+        line_count  INTEGER NOT NULL DEFAULT 0,
+        xml_summary TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_modules_object ON modules(object_id)",
     """CREATE VIRTUAL TABLE IF NOT EXISTS fts_modules USING fts5(
@@ -33,13 +34,14 @@ _DDL = [
         form_name   UNINDEXED,
         file_path   UNINDEXED,
         content,
+        xml_summary,
         tokenize="unicode61 remove_diacritics 1"
     )""",
     # Insert fts_modules with rowid = modules.id so deletion is simply rowid = OLD.id
     """CREATE TRIGGER IF NOT EXISTS modules_ai AFTER INSERT ON modules BEGIN
-        INSERT INTO fts_modules(rowid, config_name, obj_type, obj_name, is_ssl, module_type, form_name, file_path, content)
+        INSERT INTO fts_modules(rowid, config_name, obj_type, obj_name, is_ssl, module_type, form_name, file_path, content, xml_summary)
         SELECT NEW.id, o.config_name, o.obj_type, o.obj_name, o.is_ssl,
-               NEW.module_type, COALESCE(NEW.form_name, ''), NEW.file_path, NEW.content
+               NEW.module_type, COALESCE(NEW.form_name, ''), NEW.file_path, NEW.content, COALESCE(NEW.xml_summary, '')
         FROM objects o WHERE o.id = NEW.object_id;
     END""",
     """CREATE TRIGGER IF NOT EXISTS modules_ad AFTER DELETE ON modules BEGIN
@@ -83,10 +85,29 @@ _DROP_TRIGGERS = [
 ]
 
 
+def _migrate_xml_summary(conn: sqlite3.Connection) -> None:
+    tables = {row["name"] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='modules'"
+    )}
+    if not tables:
+        return  # fresh DB, _DDL will create the up-to-date schema
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(modules)")}
+    if "xml_summary" in columns:
+        return  # already migrated
+
+    conn.execute("ALTER TABLE modules ADD COLUMN xml_summary TEXT")
+    conn.execute("DROP TABLE IF EXISTS fts_modules")
+    # Existing fts_modules content is now stale relative to modules/objects; force a
+    # full reindex of every config so fts_modules and the new xml_summary get populated.
+    conn.execute("DELETE FROM index_runs")
+
+
 def ensure_schema(db_path: str) -> None:
     conn = get_connection(db_path)
     for stmt in _DROP_TRIGGERS:
         conn.execute(stmt)
+    _migrate_xml_summary(conn)
     for stmt in _DDL:
         conn.execute(stmt)
     conn.commit()
