@@ -2,6 +2,7 @@
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import db
@@ -42,9 +43,13 @@ def main() -> None:
         if not path.exists():
             print(f"SKIP {cfg['name']}: path does not exist: {path}")
             continue
-        print(f"Indexing {cfg['name']} from {path} ...", end=" ", flush=True)
-        obj_count, file_count = p.index_config(conn, cfg)
-        print(f"{obj_count} objects, {file_count} modules")
+        print(f"Indexing {cfg['name']} from {path}")
+        start = time.monotonic()
+        obj_count, file_count = p.index_config(
+            conn, cfg, on_progress=lambda msg: print(f"  {msg}", flush=True)
+        )
+        elapsed = time.monotonic() - start
+        print(f"  Done: {obj_count} objects, {file_count} modules in {elapsed:.1f}s")
 
     conn.close()
 

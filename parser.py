@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -132,10 +133,18 @@ def extract_form_summary(form_xml_path: Path | None, logform_xml_path: Path | No
     return result
 
 
-def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
+def index_config(
+    conn: sqlite3.Connection,
+    config: dict,
+    on_progress: Callable[[str], None] | None = None,
+) -> tuple[int, int]:
     config_name = config["name"]
     config_path = Path(config["path"])
     is_ssl = int(config.get("is_ssl", False))
+
+    def report(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
 
     # Delete existing data for this config (CASCADE removes modules; FTS triggers fire)
     conn.execute("DELETE FROM objects WHERE config_name = ?", (config_name,))
@@ -143,10 +152,13 @@ def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
     obj_count = 0
     file_count = 0
 
-    for type_dir in config_path.iterdir():
-        if not type_dir.is_dir() or type_dir.name not in OBJECT_TYPES:
-            continue
+    type_dirs = sorted(
+        d for d in config_path.iterdir() if d.is_dir() and d.name in OBJECT_TYPES
+    )
+    for type_dir_index, type_dir in enumerate(type_dirs, start=1):
         obj_type = type_dir.name
+        obj_count_before, file_count_before = obj_count, file_count
+        report(f"[{type_dir_index}/{len(type_dirs)}] {obj_type} ...")
 
         for item in type_dir.iterdir():
             if not item.is_dir():
@@ -210,6 +222,11 @@ def index_config(conn: sqlite3.Connection, config: dict) -> tuple[int, int]:
                     )
                     if inserted:
                         file_count += 1
+
+        report(
+            f"[{type_dir_index}/{len(type_dirs)}] {obj_type}: "
+            f"{obj_count - obj_count_before} objects, {file_count - file_count_before} modules"
+        )
 
     # Root-level modules: Ext/SessionModule.bsl, Ext/ManagedApplicationModule.bsl, etc.
     root_ext = config_path / "Ext"
