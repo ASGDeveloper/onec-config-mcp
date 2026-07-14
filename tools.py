@@ -2,6 +2,12 @@ import re
 import sqlite3
 
 
+def _fts5_escape(text: str) -> str:
+    # Wrap as a phrase so FTS5's query grammar doesn't choke on ".", "(", ",", etc.
+    # in BSL code snippets (e.g. "Объект.Метод(Параметр)") passed as-is by callers.
+    return '"' + text.replace('"', '""') + '"'
+
+
 def search_code(conn: sqlite3.Connection, args: dict) -> list[dict]:
     query = args.get("query", "")
     config_name = args.get("config_name")
@@ -11,7 +17,7 @@ def search_code(conn: sqlite3.Connection, args: dict) -> list[dict]:
 
     # FTS5 filter expressions (column:value syntax for UNINDEXED columns not searchable,
     # so we filter with WHERE on the stored columns after FTS match)
-    params: list = [query]
+    params: list = [_fts5_escape(query)]
     post_filters = []
 
     if config_name is not None:
@@ -66,7 +72,7 @@ def find_object(conn: sqlite3.Connection, args: dict) -> list[dict]:
             WHERE fts_objects MATCH ?
             {where_extra}
             ORDER BY rank LIMIT 20""",
-        [name] + extra_params,
+        [_fts5_escape(name)] + extra_params,
     ).fetchall()
 
     return [dict(r) for r in rows]
