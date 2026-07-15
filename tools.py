@@ -228,6 +228,251 @@ def find_procedure(conn: sqlite3.Connection, args: dict) -> list[dict]:
     return results
 
 
+def _definition_pattern(proc_name: str) -> re.Pattern:
+    return re.compile(
+        r"(Процедура|Функция|Procedure|Function)\s+" + re.escape(proc_name) + r"\s*\(",
+        re.IGNORECASE,
+    )
+
+
+_END_DEF_RE = re.compile(
+    r"^\s*(КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)\b", re.IGNORECASE
+)
+
+
+def _extract_procedure_bodies(
+    conn: sqlite3.Connection, proc_name: str, config_name: str | None
+) -> list[dict]:
+    """Find every module containing a `Процедура/Функция proc_name(` definition
+    and cut out its body (up to the matching КонецПроцедуры/КонецФункции).
+    BSL procedures/functions don't nest, so the first end-marker after the
+    definition line is always the right boundary."""
+    extra_params: list = []
+    extra = ""
+    if config_name:
+        extra = "AND o.config_name = ?"
+        extra_params.append(config_name)
+
+    sql = f"""SELECT o.config_name, o.obj_type, o.obj_name,
+                   m.module_type, m.form_name, m.file_path, m.content
+            FROM fts_modules
+            JOIN modules m ON fts_modules.rowid = m.id
+            JOIN objects o ON m.object_id = o.id
+            WHERE fts_modules MATCH ?
+            {extra}"""
+
+    rows = _fts5_query_with_fallback(conn, sql, proc_name, extra_params)
+
+    pattern = _definition_pattern(proc_name)
+
+    results = []
+    seen = set()
+    for r in rows:
+        file_path = r["file_path"]
+        if file_path in seen:
+            continue
+
+        lines = r["content"].splitlines()
+        start_idx = next((i for i, line in enumerate(lines) if pattern.search(line)), None)
+        if start_idx is None:
+            continue
+
+        end_idx = len(lines) - 1
+        for i in range(start_idx, len(lines)):
+            if _END_DEF_RE.match(lines[i]):
+                end_idx = i
+                break
+
+        results.append({
+            "config_name": r["config_name"],
+            "obj_type": r["obj_type"],
+            "obj_name": r["obj_name"],
+            "module_type": r["module_type"],
+            "form_name": r["form_name"],
+            "file_path": file_path,
+            "start_line": start_idx + 1,
+            "end_line": end_idx + 1,
+            "body": "\n".join(lines[start_idx:end_idx + 1]),
+        })
+        seen.add(file_path)
+
+    return results
+
+
+def get_procedure_body(conn: sqlite3.Connection, args: dict) -> list[dict]:
+    proc_name = args.get("proc_name", "")
+    config_name = args.get("config_name")
+    return _extract_procedure_bodies(conn, proc_name, config_name)
+
+
+_PROC_START_RE = re.compile(
+    r"^\s*(Процедура|Функция|Procedure|Function)\s+(\w+)\s*\(", re.IGNORECASE
+)
+_EXPORT_RE = re.compile(r"\bЭкспорт\b|\bExport\b", re.IGNORECASE)
+
+
+def _outline_from_content(content: str) -> list[dict]:
+    lines = content.splitlines()
+    procedures = []
+    for i, line in enumerate(lines):
+        m = _PROC_START_RE.match(line)
+        if not m:
+            continue
+        kind_raw, name = m.groups()
+        kind = "Функция" if kind_raw.lower() in ("функция", "function") else "Процедура"
+
+        # Экспорт sits after the closing ")" of the signature, which may be on
+        # a later line for multi-line parameter lists - join lines up to the
+        # first one containing ")" (capped so a stray unbalanced paren can't
+        # scan the rest of the module).
+        header_lines = [line]
+        j = i
+        while ")" not in header_lines[-1] and j + 1 < len(lines) and len(header_lines) < 20:
+            j += 1
+            header_lines.append(lines[j])
+
+        procedures.append({
+            "name": name,
+            "kind": kind,
+            "is_export": bool(_EXPORT_RE.search(" ".join(header_lines))),
+            "line": i + 1,
+        })
+    return procedures
+
+
+def get_module_outline(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
+    obj_name = args.get("obj_name", "")
+    config_name = args.get("config_name")
+    module_type = args.get("module_type")
+    form_name = args.get("form_name")
+
+    filters = ["o.obj_name = ?"]
+    params: list = [obj_name]
+    if config_name:
+        filters.append("o.config_name = ?")
+        params.append(config_name)
+    if module_type:
+        filters.append("m.module_type = ?")
+        params.append(module_type)
+    if form_name:
+        filters.append("m.form_name = ?")
+        params.append(form_name)
+
+    where = " AND ".join(filters)
+    rows = conn.execute(
+        f"""SELECT m.content, m.module_type, m.form_name,
+                   o.config_name, o.obj_type, o.obj_name
+            FROM modules m
+            JOIN objects o ON m.object_id = o.id
+            WHERE {where}
+            LIMIT 5""",
+        params,
+    ).fetchall()
+
+    if not rows:
+        return {"error": f"Module not found: {obj_name}"}
+
+    results = []
+    for row in rows:
+        r = dict(row)
+        r["procedures"] = _outline_from_content(r.pop("content"))
+        results.append(r)
+
+    return results[0] if len(results) == 1 else results
+
+
+def get_callers(conn: sqlite3.Connection, args: dict) -> list[dict]:
+    proc_name = args.get("proc_name", "")
+    config_name = args.get("config_name")
+
+    extra_params: list = []
+    extra = ""
+    if config_name:
+        extra = "AND o.config_name = ?"
+        extra_params.append(config_name)
+
+    sql = f"""SELECT o.config_name, o.obj_type, o.obj_name,
+                   m.module_type, m.form_name, m.file_path, m.content
+            FROM fts_modules
+            JOIN modules m ON fts_modules.rowid = m.id
+            JOIN objects o ON m.object_id = o.id
+            WHERE fts_modules MATCH ?
+            {extra}"""
+
+    rows = _fts5_query_with_fallback(conn, sql, proc_name, extra_params)
+
+    def_pattern = _definition_pattern(proc_name)
+    call_pattern = re.compile(r"\b" + re.escape(proc_name) + r"\s*\(", re.IGNORECASE)
+
+    results = []
+    for r in rows:
+        for line_no, line in enumerate(r["content"].splitlines(), start=1):
+            if def_pattern.search(line):
+                continue
+            if call_pattern.search(line):
+                results.append({
+                    "config_name": r["config_name"],
+                    "obj_type": r["obj_type"],
+                    "obj_name": r["obj_name"],
+                    "module_type": r["module_type"],
+                    "form_name": r["form_name"],
+                    "file_path": r["file_path"],
+                    "line": line_no,
+                    "context": line.strip(),
+                })
+
+    return results
+
+
+# Words that follow the "Identifier(" shape of a call but aren't one -
+# BSL control-flow/declaration keywords that can precede a parenthesized
+# expression (e.g. "Если(", "Пока(", "Новый(").
+_BSL_KEYWORDS = {
+    "Если", "Пока", "Для", "Тогда", "Иначе", "ИначеЕсли", "КонецЕсли",
+    "КонецЦикла", "Процедура", "Функция", "КонецПроцедуры", "КонецФункции",
+    "Возврат", "Новый", "Прервать", "Продолжить", "Попытка", "Исключение",
+    "КонецПопытки", "Экспорт", "Перем", "Каждого", "Из", "По", "Цикл",
+    "If", "While", "For", "Then", "Else", "ElsIf", "EndIf", "EndDo",
+    "Procedure", "Function", "EndProcedure", "EndFunction", "Return",
+    "New", "Break", "Continue", "Try", "Except", "EndTry", "Export",
+    "Var", "Each", "In", "To", "Do",
+}
+
+_CALL_RE = re.compile(r"\b([A-ZА-Я][\wА-Яа-я]*)\s*\(")
+
+
+def get_callees(conn: sqlite3.Connection, args: dict) -> list[dict]:
+    proc_name = args.get("proc_name", "")
+    config_name = args.get("config_name")
+
+    bodies = _extract_procedure_bodies(conn, proc_name, config_name)
+
+    results = []
+    for b in bodies:
+        counts: dict[str, int] = {}
+        for m in _CALL_RE.finditer(b["body"]):
+            name = m.group(1)
+            if name in _BSL_KEYWORDS or name.lower() == proc_name.lower():
+                continue
+            counts[name] = counts.get(name, 0) + 1
+
+        callees = [
+            {"name": n, "count": c}
+            for n, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+        results.append({
+            "config_name": b["config_name"],
+            "obj_type": b["obj_type"],
+            "obj_name": b["obj_name"],
+            "module_type": b["module_type"],
+            "form_name": b["form_name"],
+            "file_path": b["file_path"],
+            "callees": callees,
+        })
+
+    return results
+
+
 def list_configs(conn: sqlite3.Connection, _args: dict) -> list[dict]:
     rows = conn.execute("SELECT * FROM index_runs ORDER BY config_name").fetchall()
     return [dict(r) for r in rows]

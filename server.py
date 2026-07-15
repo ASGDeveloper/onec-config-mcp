@@ -228,6 +228,56 @@ TOOL_DEFS = [
             "required": ["obj_name"],
         },
     ),
+    types.Tool(
+        name="get_procedure_body",
+        description="Получить исходный текст тела процедуры/функции по точному имени, без чтения всего модуля.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "proc_name":   {"type": "string", "description": "Имя процедуры/функции"},
+                "config_name": {"type": "string", "description": "Конфигурация. Опционально."},
+            },
+            "required": ["proc_name"],
+        },
+    ),
+    types.Tool(
+        name="get_module_outline",
+        description="Карта модуля: список всех процедур/функций (имя, тип, Экспорт, номер строки) без вывода исходника.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "obj_name":    {"type": "string", "description": "Имя объекта"},
+                "config_name": {"type": "string", "description": "Конфигурация. Опционально."},
+                "module_type": {"type": "string", "description": "Module / ObjectModule / ManagerModule / FormModule"},
+                "form_name":   {"type": "string", "description": "Имя формы при module_type=FormModule"},
+            },
+            "required": ["obj_name"],
+        },
+    ),
+    types.Tool(
+        name="get_callers",
+        description="Найти все места вызова процедуры/функции по конфигурациям (кто вызывает).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "proc_name":   {"type": "string", "description": "Имя процедуры/функции"},
+                "config_name": {"type": "string", "description": "Конфигурация. Опционально."},
+            },
+            "required": ["proc_name"],
+        },
+    ),
+    types.Tool(
+        name="get_callees",
+        description="Найти, какие процедуры/функции вызываются внутри заданной (эвристика на regex, без учёта области видимости).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "proc_name":   {"type": "string", "description": "Имя процедуры/функции"},
+                "config_name": {"type": "string", "description": "Конфигурация. Опционально."},
+            },
+            "required": ["proc_name"],
+        },
+    ),
 ]
 
 TOOL_HANDLERS = {
@@ -238,6 +288,10 @@ TOOL_HANDLERS = {
     "find_procedure":      t.find_procedure,
     "list_configs":        t.list_configs,
     "get_object_metadata": t.get_object_metadata,
+    "get_procedure_body":  t.get_procedure_body,
+    "get_module_outline":  t.get_module_outline,
+    "get_callers":         t.get_callers,
+    "get_callees":         t.get_callees,
 }
 
 
