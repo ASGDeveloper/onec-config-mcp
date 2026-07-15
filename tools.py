@@ -99,12 +99,23 @@ def find_object(conn: sqlite3.Connection, args: dict) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
-    obj_name = args.get("obj_name", "")
-    config_name = args.get("config_name")
-    module_type = args.get("module_type")
-    form_name = args.get("form_name")
+MAX_AVAILABLE_MODULES_LISTED = 30
 
+
+def _find_modules_or_error(
+    conn: sqlite3.Connection,
+    select_cols: str,
+    obj_name: str,
+    config_name: str | None,
+    module_type: str | None,
+    form_name: str | None,
+) -> list | dict:
+    """Shared obj_name(+config_name/module_type/form_name) module lookup used by
+    get_module and get_module_outline. On no match, distinguishes "object doesn't
+    exist" from "object exists but module_type/form_name filter matched nothing"
+    and in the latter case lists the module_type/form_name combos that do exist,
+    so a wrong value (e.g. module_type="Form" instead of "FormModule") is
+    diagnosable from the error alone."""
     filters = ["o.obj_name = ?"]
     params: list = [obj_name]
     if config_name:
@@ -119,8 +130,7 @@ def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
 
     where = " AND ".join(filters)
     rows = conn.execute(
-        f"""SELECT m.content, m.file_path, m.module_type, m.form_name, m.line_count, m.xml_summary,
-                   o.config_name, o.obj_type, o.obj_name
+        f"""SELECT {select_cols}
             FROM modules m
             JOIN objects o ON m.object_id = o.id
             WHERE {where}
@@ -128,8 +138,58 @@ def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
         params,
     ).fetchall()
 
-    if not rows:
-        return {"error": f"Module not found: {obj_name}"}
+    if rows:
+        return rows
+
+    base_filters = ["o.obj_name = ?"]
+    base_params: list = [obj_name]
+    if config_name:
+        base_filters.append("o.config_name = ?")
+        base_params.append(config_name)
+
+    available = conn.execute(
+        f"""SELECT DISTINCT o.config_name, m.module_type, m.form_name
+            FROM modules m
+            JOIN objects o ON m.object_id = o.id
+            WHERE {" AND ".join(base_filters)}
+            ORDER BY o.config_name, m.module_type, m.form_name""",
+        base_params,
+    ).fetchall()
+
+    if not available:
+        return {"error": f"Object not found: {obj_name}"}
+
+    shown = available[:MAX_AVAILABLE_MODULES_LISTED]
+    entries = [
+        r["config_name"] + "/" + r["module_type"] + (f"/{r['form_name']}" if r["form_name"] else "")
+        for r in shown
+    ]
+    if len(available) > MAX_AVAILABLE_MODULES_LISTED:
+        entries.append(f"... (+{len(available) - MAX_AVAILABLE_MODULES_LISTED} more)")
+
+    return {
+        "error": (
+            f"Object '{obj_name}' exists, but no module matches "
+            f"module_type={module_type!r} form_name={form_name!r}. "
+            f"Available: {', '.join(entries)}"
+        )
+    }
+
+
+def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
+    obj_name = args.get("obj_name", "")
+    config_name = args.get("config_name")
+    module_type = args.get("module_type")
+    form_name = args.get("form_name")
+
+    rows = _find_modules_or_error(
+        conn,
+        "m.content, m.file_path, m.module_type, m.form_name, m.line_count, m.xml_summary, "
+        "o.config_name, o.obj_type, o.obj_name",
+        obj_name, config_name, module_type, form_name,
+    )
+    if isinstance(rows, dict):
+        return rows
 
     results = []
     for row in rows:
@@ -346,31 +406,13 @@ def get_module_outline(conn: sqlite3.Connection, args: dict) -> dict | list[dict
     module_type = args.get("module_type")
     form_name = args.get("form_name")
 
-    filters = ["o.obj_name = ?"]
-    params: list = [obj_name]
-    if config_name:
-        filters.append("o.config_name = ?")
-        params.append(config_name)
-    if module_type:
-        filters.append("m.module_type = ?")
-        params.append(module_type)
-    if form_name:
-        filters.append("m.form_name = ?")
-        params.append(form_name)
-
-    where = " AND ".join(filters)
-    rows = conn.execute(
-        f"""SELECT m.content, m.module_type, m.form_name,
-                   o.config_name, o.obj_type, o.obj_name
-            FROM modules m
-            JOIN objects o ON m.object_id = o.id
-            WHERE {where}
-            LIMIT 5""",
-        params,
-    ).fetchall()
-
-    if not rows:
-        return {"error": f"Module not found: {obj_name}"}
+    rows = _find_modules_or_error(
+        conn,
+        "m.content, m.module_type, m.form_name, o.config_name, o.obj_type, o.obj_name",
+        obj_name, config_name, module_type, form_name,
+    )
+    if isinstance(rows, dict):
+        return rows
 
     results = []
     for row in rows:
