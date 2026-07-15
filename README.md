@@ -37,13 +37,15 @@ pip install -e .
     {
       "name": "МояКонфигурация",
       "path": "C:/path/to/exported/config",
-      "is_ssl": false,
+      "object_types": "all",
+      "index_forms": true,
       "watch": true
     },
     {
-      "name": "БСП",
-      "path": "C:/path/to/bsl-library",
-      "is_ssl": true
+      "name": "БП",
+      "path": "C:/path/to/exported/acc30",
+      "object_types": "base",
+      "index_forms": false
     }
   ]
 }
@@ -54,8 +56,11 @@ pip install -e .
 | `db_path` | Путь к файлу базы данных SQLite (будет создан автоматически) |
 | `name` | Имя конфигурации (используется как фильтр в инструментах) |
 | `path` | Путь к корню выгруженной конфигурации |
-| `is_ssl` | `true` — конфигурация является библиотекой БСП (Standard Subsystems Library) |
+| `object_types` | Какие типы объектов индексировать: `"all"` (по умолчанию, все типы из списка ниже), `"base"` (только `Catalogs`, `Documents`, `InformationRegisters`, `Enums`) или явный список, например `["Catalogs", "Documents", "CommonModules"]` |
+| `index_forms` | `true` (по умолчанию) — индексировать формы (код и метаданные); `false` — полностью пропускать формы для этой конфигурации |
 | `watch` | `true` — автоматически переиндексировать при изменении файлов |
+
+Типовые конфигурации (БП, БГУ, УТ, УНФ и т.п.), используемые в основном как справочник данных, обычно достаточно индексировать с `"object_types": "base", "index_forms": false` — это заметно уменьшает размер базы. Для своей конфигурации и библиотек, по которым нужен полный поиск кода (БСП и т.п.), используйте `"object_types": "all", "index_forms": true`.
 
 **Важно:** `db_path` не должен находиться в `AppData\Local` — Claude Code работает в UWP-sandbox и перенаправляет этот путь. Используйте папку `Documents` или другое место.
 
@@ -73,6 +78,8 @@ python indexer.py --stats
 ```
 
 При повторном запуске данные конфигурации полностью перезаписываются.
+
+**После обновления схемы БД** (например, при обновлении самого `onec-config-mcp`) удалите `index.db` и файлы `index.db-wal`/`index.db-shm` перед запуском `indexer.py` — старая база несовместима с новой схемой и не мигрируется автоматически.
 
 ## Подключение к Claude Code
 
@@ -116,7 +123,6 @@ python indexer.py --stats
 query       — текст или FTS5-выражение ("ПроверитьПрава" OR "CheckRights")
 config_name — фильтр по конфигурации (опционально)
 obj_type    — фильтр по типу объекта: CommonModules, Catalogs, Documents, ...
-is_ssl      — true/false — фильтр по библиотеке БСП
 limit       — максимум результатов (по умолчанию 20)
 ```
 

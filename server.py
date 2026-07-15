@@ -156,7 +156,6 @@ TOOL_DEFS = [
                 "query":       {"type": "string", "description": "Текст для поиска"},
                 "config_name": {"type": "string", "description": "Фильтр по конфигурации (Доки, БП, БСП)"},
                 "obj_type":    {"type": "string", "description": "Фильтр по типу объекта (CommonModules, Catalogs, ...)"},
-                "is_ssl":      {"type": "boolean", "description": "true = только БСП (Библиотека стандартных подсистем), false = только прикладной код"},
                 "limit":       {"type": "integer", "description": "Макс. результатов (по умолчанию 20)", "default": 20},
             },
             "required": ["query"],
@@ -197,7 +196,6 @@ TOOL_DEFS = [
             "properties": {
                 "obj_type":    {"type": "string", "description": "Тип объекта (CommonModules, Catalogs, ...)"},
                 "config_name": {"type": "string", "description": "Конфигурация"},
-                "is_ssl":      {"type": "boolean", "description": "Фильтр по БСП"},
             },
         },
     ),

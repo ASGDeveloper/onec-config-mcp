@@ -14,6 +14,11 @@ OBJECT_TYPES = {
     "ScheduledJobs", "Sequences",
 }
 
+# Minimal set of object types worth indexing for configurations that are only
+# used as a data model reference, not as a code-search target (see
+# object_types config key below).
+BASE_OBJECT_TYPES = {"Catalogs", "Documents", "InformationRegisters", "Enums"}
+
 # BSL module filenames relative to object's Ext/ directory
 SIMPLE_MODULES = [
     "Module.bsl",
@@ -22,6 +27,91 @@ SIMPLE_MODULES = [
     "RecordSetModule.bsl",
     "CommandModule.bsl",
 ]
+
+
+def _resolve_object_types(spec) -> set[str]:
+    """config["object_types"]: "all" (default) | "base" | explicit list of type names."""
+    if spec is None or spec == "all":
+        return OBJECT_TYPES
+    if spec == "base":
+        return BASE_OBJECT_TYPES
+    return set(spec)
+
+
+def _direct_child(el, name: str):
+    for child in el:
+        if etree.QName(child.tag).localname == name:
+            return child
+    return None
+
+
+def _own_name(el) -> str | None:
+    """<X><Properties><Name>...</Name>...` - the element's own declared name,
+    as opposed to names of its descendants picked up by a flat root.iter() walk."""
+    props = _direct_child(el, "Properties")
+    if props is None:
+        return None
+    name_el = _direct_child(props, "Name")
+    if name_el is not None and name_el.text:
+        return name_el.text.strip()
+    return None
+
+
+# v8:Type / v8:TypeSet value -> readable 1C type name. Anything not covered
+# here falls back to the raw value as-is rather than guessing.
+_SIMPLE_TYPE_NAMES = {
+    "xs:string": "Строка",
+    "xs:boolean": "Булево",
+    "xs:decimal": "Число",
+    "xs:dateTime": "Дата",
+}
+
+_REF_KIND_NAMES = {
+    "CatalogRef": "СправочникСсылка",
+    "DocumentRef": "ДокументСсылка",
+    "EnumRef": "ПеречислениеСсылка",
+    "ChartOfCharacteristicTypesRef": "ПланВидовХарактеристикСсылка",
+    "ChartOfAccountsRef": "ПланСчетовСсылка",
+    "ChartOfCalculationTypesRef": "ПланВидовРасчетаСсылка",
+    "BusinessProcessRef": "БизнесПроцессСсылка",
+    "TaskRef": "ЗадачаСсылка",
+    "ExchangePlanRef": "ПланОбменаСсылка",
+    "DefinedType": "ОпределяемыйТип",
+}
+
+
+def _readable_type_name(raw: str, type_el) -> str:
+    if raw in _SIMPLE_TYPE_NAMES:
+        base = _SIMPLE_TYPE_NAMES[raw]
+        if raw == "xs:decimal":
+            qual = _direct_child(type_el, "NumberQualifiers")
+            if qual is not None:
+                digits = _direct_child(qual, "Digits")
+                frac = _direct_child(qual, "FractionDigits")
+                if digits is not None and digits.text:
+                    d = digits.text.strip()
+                    f = frac.text.strip() if frac is not None and frac.text else "0"
+                    return f"{base}({d},{f})"
+        return base
+    # e.g. "cfg:CatalogRef.Организации" -> kind="CatalogRef", name="Организации"
+    _, _, rest = raw.partition(":")
+    kind, sep, name = rest.partition(".")
+    if sep and kind in _REF_KIND_NAMES:
+        return f"{_REF_KIND_NAMES[kind]}.{name}"
+    return raw
+
+
+def _format_type(type_el) -> str | None:
+    """<Type> element containing one or more <v8:Type>/<v8:TypeSet> children
+    (composite types list several) -> readable, comma-joined type name(s)."""
+    parts = []
+    for child in type_el:
+        local = etree.QName(child.tag).localname
+        if local in ("Type", "TypeSet") and child.text:
+            parts.append(_readable_type_name(child.text.strip(), type_el))
+    if not parts:
+        return None
+    return ", ".join(dict.fromkeys(parts))
 
 
 def extract_xml_summary(xml_path: Path) -> str:
@@ -35,6 +125,36 @@ def extract_xml_summary(xml_path: Path) -> str:
                 texts.append(el.text.strip())
             elif tag in ("Server", "Global", "Privileged", "ClientManagedApplication") and el.text == "true":
                 texts.append(f"{tag}=true")
+
+        # Enrich with typed attribute entries (name + type, and tabular
+        # section membership if any) on top of the flat name/comment walk
+        # above, e.g. "ТЧ Запасы.Цена (Число(15,2))". Isolated in its own
+        # try/except so a malformed <Type> on one attribute can't blank out
+        # the already-collected flat names/comments for the whole object.
+        try:
+            for attr_el in root.iter():
+                if etree.QName(attr_el.tag).localname != "Attribute":
+                    continue
+                attr_name = _own_name(attr_el)
+                if not attr_name:
+                    continue
+                props = _direct_child(attr_el, "Properties")
+                type_el = _direct_child(props, "Type") if props is not None else None
+                type_name = _format_type(type_el) if type_el is not None else None
+                if not type_name:
+                    continue
+                section_name = None
+                for ancestor in attr_el.iterancestors():
+                    if etree.QName(ancestor.tag).localname == "TabularSection":
+                        section_name = _own_name(ancestor)
+                        break
+                if section_name:
+                    texts.append(f"ТЧ {section_name}.{attr_name} ({type_name})")
+                else:
+                    texts.append(f"{attr_name} ({type_name})")
+        except Exception:
+            pass
+
         return " | ".join(dict.fromkeys(texts))  # deduplicate preserving order
     except Exception:
         return ""
@@ -140,7 +260,8 @@ def index_config(
 ) -> tuple[int, int]:
     config_name = config["name"]
     config_path = Path(config["path"])
-    is_ssl = int(config.get("is_ssl", False))
+    object_types = _resolve_object_types(config.get("object_types"))
+    index_forms = bool(config.get("index_forms", True))
 
     def report(msg: str) -> None:
         if on_progress:
@@ -153,7 +274,7 @@ def index_config(
     file_count = 0
 
     type_dirs = sorted(
-        d for d in config_path.iterdir() if d.is_dir() and d.name in OBJECT_TYPES
+        d for d in config_path.iterdir() if d.is_dir() and d.name in object_types
     )
     for type_dir_index, type_dir in enumerate(type_dirs, start=1):
         obj_type = type_dir.name
@@ -169,9 +290,9 @@ def index_config(
 
             conn.execute(
                 """INSERT OR REPLACE INTO objects
-                   (config_name, obj_type, obj_name, is_ssl, xml_path, xml_summary)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (config_name, obj_type, obj_name, is_ssl,
+                   (config_name, obj_type, obj_name, xml_path, xml_summary)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (config_name, obj_type, obj_name,
                  str(xml_path) if xml_path.exists() else None,
                  xml_summary),
             )
@@ -195,6 +316,9 @@ def index_config(
             if session_bsl and session_bsl.exists():
                 _insert_module(conn, obj_id, "SessionModule", None, session_bsl)
                 file_count += 1
+
+            if not index_forms:
+                continue
 
             # CommonForms: the object dir *is* the form dir (Ext/Form/Module.bsl,
             # Ext/Form.xml), unlike SIMPLE_MODULES's flat Ext/Module.bsl layout.
@@ -236,9 +360,9 @@ def index_config(
             obj_type = "Configuration"
             conn.execute(
                 """INSERT OR IGNORE INTO objects
-                   (config_name, obj_type, obj_name, is_ssl, xml_path, xml_summary)
-                   VALUES (?, ?, ?, ?, NULL, ?)""",
-                (config_name, obj_type, obj_name, is_ssl, "Root configuration modules"),
+                   (config_name, obj_type, obj_name, xml_path, xml_summary)
+                   VALUES (?, ?, ?, NULL, ?)""",
+                (config_name, obj_type, obj_name, "Root configuration modules"),
             )
             obj_id_row = conn.execute(
                 "SELECT id FROM objects WHERE config_name=? AND obj_type=? AND obj_name=?",

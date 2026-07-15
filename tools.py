@@ -1,10 +1,17 @@
 import re
 import sqlite3
 
+_FTS5_SYNTAX_RE = re.compile(r'"|(?:^|\s)(?:AND|OR|NOT)(?:\s|$)|\*(?:\s|$)')
+
 
 def _fts5_escape(text: str) -> str:
-    # Wrap as a phrase so FTS5's query grammar doesn't choke on ".", "(", ",", etc.
-    # in BSL code snippets (e.g. "Объект.Метод(Параметр)") passed as-is by callers.
+    # Callers that deliberately use FTS5 syntax (quoted phrases, AND/OR/NOT,
+    # prefix "*") are passed through as-is and trusted to be well-formed.
+    # Everything else (typically a raw BSL snippet/identifier, e.g.
+    # "Объект.Метод(Параметр)") is wrapped as a single phrase so FTS5's query
+    # grammar doesn't choke on ".", "(", ",", etc.
+    if _FTS5_SYNTAX_RE.search(text):
+        return text
     return '"' + text.replace('"', '""') + '"'
 
 
@@ -12,33 +19,29 @@ def search_code(conn: sqlite3.Connection, args: dict) -> list[dict]:
     query = args.get("query", "")
     config_name = args.get("config_name")
     obj_type = args.get("obj_type")
-    is_ssl = args.get("is_ssl")
     limit = int(args.get("limit", 20))
 
-    # FTS5 filter expressions (column:value syntax for UNINDEXED columns not searchable,
-    # so we filter with WHERE on the stored columns after FTS match)
     params: list = [_fts5_escape(query)]
     post_filters = []
 
     if config_name is not None:
-        post_filters.append("config_name = ?")
+        post_filters.append("o.config_name = ?")
         params.append(config_name)
     if obj_type is not None:
-        post_filters.append("obj_type = ?")
+        post_filters.append("o.obj_type = ?")
         params.append(obj_type)
-    if is_ssl is not None:
-        post_filters.append("is_ssl = ?")
-        params.append(str(int(is_ssl)))
 
     params.append(limit)
     extra = ("AND " + " AND ".join(post_filters)) if post_filters else ""
 
     rows = conn.execute(
         f"""SELECT
-                config_name, obj_type, obj_name, is_ssl,
-                module_type, form_name, file_path,
-                snippet(fts_modules, 7, '>>>', '<<<', '...', 32) AS snippet
+                o.config_name, o.obj_type, o.obj_name,
+                m.module_type, m.form_name, m.file_path,
+                snippet(fts_modules, 3, '>>>', '<<<', '...', 32) AS snippet
             FROM fts_modules
+            JOIN modules m ON fts_modules.rowid = m.id
+            JOIN objects o ON m.object_id = o.id
             WHERE fts_modules MATCH ?
             {extra}
             ORDER BY rank
@@ -66,7 +69,7 @@ def find_object(conn: sqlite3.Connection, args: dict) -> list[dict]:
     where_extra = ("AND " + " AND ".join(extra_filters)) if extra_filters else ""
 
     rows = conn.execute(
-        f"""SELECT o.id, o.config_name, o.obj_type, o.obj_name, o.is_ssl, o.xml_summary
+        f"""SELECT o.id, o.config_name, o.obj_type, o.obj_name, o.xml_summary
             FROM fts_objects
             JOIN objects o ON fts_objects.rowid = o.id
             WHERE fts_objects MATCH ?
@@ -99,7 +102,7 @@ def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
     where = " AND ".join(filters)
     rows = conn.execute(
         f"""SELECT m.content, m.file_path, m.module_type, m.form_name, m.line_count, m.xml_summary,
-                   o.config_name, o.obj_type, o.obj_name, o.is_ssl
+                   o.config_name, o.obj_type, o.obj_name
             FROM modules m
             JOIN objects o ON m.object_id = o.id
             WHERE {where}
@@ -126,7 +129,6 @@ def get_module(conn: sqlite3.Connection, args: dict) -> dict | list[dict]:
 def list_objects(conn: sqlite3.Connection, args: dict) -> list[dict]:
     obj_type = args.get("obj_type")
     config_name = args.get("config_name")
-    is_ssl = args.get("is_ssl")
 
     filters = []
     params: list = []
@@ -136,14 +138,11 @@ def list_objects(conn: sqlite3.Connection, args: dict) -> list[dict]:
     if config_name:
         filters.append("config_name = ?")
         params.append(config_name)
-    if is_ssl is not None:
-        filters.append("is_ssl = ?")
-        params.append(int(is_ssl))
 
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
 
     rows = conn.execute(
-        f"""SELECT o.config_name, o.obj_type, o.obj_name, o.is_ssl,
+        f"""SELECT o.config_name, o.obj_type, o.obj_name,
                    COUNT(m.id) AS module_count
             FROM objects o
             LEFT JOIN modules m ON m.object_id = o.id
@@ -160,11 +159,27 @@ def find_procedure(conn: sqlite3.Connection, args: dict) -> list[dict]:
     proc_name = args.get("proc_name", "")
     config_name = args.get("config_name")
 
-    search_args: dict = {"query": proc_name, "limit": 50}
+    # Query fts_modules directly for every module containing the exact token,
+    # unranked and unlimited (search_code's BM25-ranked top-N would bury the
+    # definition inside a large common module below smaller modules that
+    # merely call it - see e.g. ОбщегоНазначения in a big BSP config).
+    params: list = [_fts5_escape(proc_name)]
+    extra = ""
     if config_name:
-        search_args["config_name"] = config_name
+        extra = "AND o.config_name = ?"
+        params.append(config_name)
 
-    candidates = search_code(conn, search_args)
+    rows = conn.execute(
+        f"""SELECT o.config_name, o.obj_type, o.obj_name,
+                   m.module_type, m.form_name, m.file_path, m.content
+            FROM fts_modules
+            JOIN modules m ON fts_modules.rowid = m.id
+            JOIN objects o ON m.object_id = o.id
+            WHERE fts_modules MATCH ?
+            {extra}""",
+        params,
+    ).fetchall()
+
     pattern = re.compile(
         r"(Процедура|Функция|Procedure|Function)\s+" + re.escape(proc_name) + r"\s*\(",
         re.IGNORECASE,
@@ -172,26 +187,20 @@ def find_procedure(conn: sqlite3.Connection, args: dict) -> list[dict]:
 
     results = []
     seen = set()
-    for c in candidates:
-        file_path = c["file_path"]
+    for r in rows:
+        file_path = r["file_path"]
         if file_path in seen:
             continue
 
-        row = conn.execute(
-            "SELECT content FROM modules WHERE file_path = ?", (file_path,)
-        ).fetchone()
-        if not row:
-            continue
-
-        content = row["content"]
+        content = r["content"]
         for line_no, line in enumerate(content.splitlines(), start=1):
             if pattern.search(line):
                 results.append({
-                    "config_name": c["config_name"],
-                    "obj_name": c["obj_name"],
-                    "obj_type": c["obj_type"],
-                    "module_type": c["module_type"],
-                    "form_name": c.get("form_name"),
+                    "config_name": r["config_name"],
+                    "obj_name": r["obj_name"],
+                    "obj_type": r["obj_type"],
+                    "module_type": r["module_type"],
+                    "form_name": r["form_name"],
                     "file_path": file_path,
                     "definition_line": line_no,
                     "context": line.strip(),

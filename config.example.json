@@ -4,18 +4,21 @@
     {
       "name": "МояКонфигурация",
       "path": "C:/path/to/exported/config/src",
-      "is_ssl": false,
+      "object_types": "all",
+      "index_forms": true,
       "watch": true
     },
     {
       "name": "БП",
       "path": "C:/path/to/exported/acc30",
-      "is_ssl": false
+      "object_types": "base",
+      "index_forms": false
     },
     {
       "name": "БСП",
       "path": "C:/path/to/exported/bsl",
-      "is_ssl": true
+      "object_types": "all",
+      "index_forms": true
     }
   ]
 }

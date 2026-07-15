@@ -6,6 +6,9 @@
 # Local config with personal paths
 config.json
 
+# Tests hit real local paths (c:/1c/exports/...) - local-only regression checks
+tests/
+
 # Logs
 server.log
 
