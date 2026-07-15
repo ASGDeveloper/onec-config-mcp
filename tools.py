@@ -15,27 +15,46 @@ def _fts5_escape(text: str) -> str:
     return '"' + text.replace('"', '""') + '"'
 
 
+def _fts5_force_phrase(text: str) -> str:
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _fts5_query_with_fallback(
+    conn: sqlite3.Connection, sql: str, raw_text: str, other_params: list, query_pos: int = 0
+) -> list:
+    # _fts5_escape's heuristic can misjudge a raw snippet as deliberate FTS5
+    # syntax (e.g. an unbalanced quote, or a quote mixed with unescaped
+    # "."/"("/")") and produce a query FTS5 rejects. Retry once with the
+    # whole raw_text forced into a single escaped phrase.
+    params = list(other_params)
+    params.insert(query_pos, _fts5_escape(raw_text))
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        params[query_pos] = _fts5_force_phrase(raw_text)
+        return conn.execute(sql, params).fetchall()
+
+
 def search_code(conn: sqlite3.Connection, args: dict) -> list[dict]:
     query = args.get("query", "")
     config_name = args.get("config_name")
     obj_type = args.get("obj_type")
     limit = int(args.get("limit", 20))
 
-    params: list = [_fts5_escape(query)]
+    other_params: list = []
     post_filters = []
 
     if config_name is not None:
         post_filters.append("o.config_name = ?")
-        params.append(config_name)
+        other_params.append(config_name)
     if obj_type is not None:
         post_filters.append("o.obj_type = ?")
-        params.append(obj_type)
+        other_params.append(obj_type)
 
-    params.append(limit)
+    other_params.append(limit)
     extra = ("AND " + " AND ".join(post_filters)) if post_filters else ""
 
-    rows = conn.execute(
-        f"""SELECT
+    sql = f"""SELECT
                 o.config_name, o.obj_type, o.obj_name,
                 m.module_type, m.form_name, m.file_path,
                 snippet(fts_modules, 3, '>>>', '<<<', '...', 32) AS snippet
@@ -45,9 +64,9 @@ def search_code(conn: sqlite3.Connection, args: dict) -> list[dict]:
             WHERE fts_modules MATCH ?
             {extra}
             ORDER BY rank
-            LIMIT ?""",
-        params,
-    ).fetchall()
+            LIMIT ?"""
+
+    rows = _fts5_query_with_fallback(conn, sql, query, other_params)
 
     return [dict(r) for r in rows]
 
@@ -68,15 +87,14 @@ def find_object(conn: sqlite3.Connection, args: dict) -> list[dict]:
 
     where_extra = ("AND " + " AND ".join(extra_filters)) if extra_filters else ""
 
-    rows = conn.execute(
-        f"""SELECT o.id, o.config_name, o.obj_type, o.obj_name, o.xml_summary
+    sql = f"""SELECT o.id, o.config_name, o.obj_type, o.obj_name, o.xml_summary
             FROM fts_objects
             JOIN objects o ON fts_objects.rowid = o.id
             WHERE fts_objects MATCH ?
             {where_extra}
-            ORDER BY rank LIMIT 20""",
-        [_fts5_escape(name)] + extra_params,
-    ).fetchall()
+            ORDER BY rank LIMIT 20"""
+
+    rows = _fts5_query_with_fallback(conn, sql, name, extra_params)
 
     return [dict(r) for r in rows]
 
@@ -163,22 +181,21 @@ def find_procedure(conn: sqlite3.Connection, args: dict) -> list[dict]:
     # unranked and unlimited (search_code's BM25-ranked top-N would bury the
     # definition inside a large common module below smaller modules that
     # merely call it - see e.g. ОбщегоНазначения in a big BSP config).
-    params: list = [_fts5_escape(proc_name)]
+    extra_params: list = []
     extra = ""
     if config_name:
         extra = "AND o.config_name = ?"
-        params.append(config_name)
+        extra_params.append(config_name)
 
-    rows = conn.execute(
-        f"""SELECT o.config_name, o.obj_type, o.obj_name,
+    sql = f"""SELECT o.config_name, o.obj_type, o.obj_name,
                    m.module_type, m.form_name, m.file_path, m.content
             FROM fts_modules
             JOIN modules m ON fts_modules.rowid = m.id
             JOIN objects o ON m.object_id = o.id
             WHERE fts_modules MATCH ?
-            {extra}""",
-        params,
-    ).fetchall()
+            {extra}"""
+
+    rows = _fts5_query_with_fallback(conn, sql, proc_name, extra_params)
 
     pattern = re.compile(
         r"(Процедура|Функция|Procedure|Function)\s+" + re.escape(proc_name) + r"\s*\(",
