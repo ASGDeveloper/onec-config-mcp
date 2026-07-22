@@ -218,7 +218,7 @@ TOOL_DEFS = [
     ),
     types.Tool(
         name="get_object_metadata",
-        description="Метаданные объекта: xml_summary, список модулей с кол-вом строк.",
+        description="Метаданные объекта: xml_summary, индексация полей (index_info), список модулей с кол-вом строк.",
         inputSchema={
             "type": "object",
             "properties": {

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -18,6 +19,28 @@ OBJECT_TYPES = {
 # used as a data model reference, not as a code-search target (see
 # object_types config key below).
 BASE_OBJECT_TYPES = {"Catalogs", "Documents", "InformationRegisters", "Enums"}
+
+REGISTER_TYPES = {
+    "InformationRegisters", "AccumulationRegisters",
+    "AccountingRegisters", "CalculationRegisters",
+}
+
+# Per "Индексы таблиц базы данных" (its.1c.ru/db/metod8dev#content:1590): Код/
+# Наименование are indexed automatically only while CodeLength/DescriptionLength
+# != 0 - these two types allow either to be 0 (no code/description at all).
+CONDITIONAL_CODE_NAME_TYPES = {"Catalogs", "ChartOfCalculationTypes"}
+
+# These types never allow CodeLength/DescriptionLength == 0 (platform enforces
+# it), so Код+Наименование are unconditionally auto-indexed.
+ALWAYS_CODE_NAME_TYPES = {"ChartOfCharacteristicTypes", "ChartOfAccounts", "ExchangePlans"}
+
+# Дата is always auto-indexed; Номер only while NumberLength != 0. Tasks also
+# get Наименование unconditionally (unlike Documents/BusinessProcesses).
+DOCUMENT_LIKE_TYPES = {"Documents", "BusinessProcesses", "Tasks"}
+
+# <Indexing> values that mean the field participates in an index (as opposed
+# to "DontIndex").
+_INDEXED_VALUES = {"Index", "IndexWithAdditionalOrder"}
 
 # BSL module filenames relative to object's Ext/ directory
 SIMPLE_MODULES = [
@@ -160,6 +183,101 @@ def extract_xml_summary(xml_path: Path) -> str:
         return ""
 
 
+def _int_prop(props, tag_name: str) -> int:
+    child = _direct_child(props, tag_name)
+    if child is None or not child.text:
+        return 0
+    try:
+        return int(child.text.strip())
+    except ValueError:
+        return 0
+
+
+def extract_index_info(xml_path: Path, obj_type: str) -> dict:
+    """Field-level indexing info for get_object_metadata.
+
+    Registers: the register's dimensions always form a base composite index in
+    declared order (so the *first* dimension is always efficiently searchable
+    alone), and any dimension/resource/attribute with <Indexing> = Index or
+    IndexWithAdditionalOrder gets its own additional index leading with that
+    field. A non-first dimension left at DontIndex has no way to be searched
+    on its own - only as part of the composite key, in declaration order.
+
+    Reference/document-like types: which standard attributes the platform
+    indexes automatically, and under what condition (Код/Наименование/Номер
+    only exist as indexed fields once CodeLength/DescriptionLength/NumberLength
+    != 0 for the object). Source: "Индексы таблиц базы данных",
+    its.1c.ru/db/metod8dev#content:1590.
+    """
+    result: dict = {}
+
+    if obj_type in REGISTER_TYPES:
+        indexed_fields = []
+        try:
+            tree = etree.parse(str(xml_path))
+            root = tree.getroot()
+            dimension_seen = 0
+            for el in root.iter():
+                tag = etree.QName(el.tag).localname
+                if tag not in ("Dimension", "Resource", "Attribute"):
+                    continue
+                name = _own_name(el)
+                if not name:
+                    continue
+                props = _direct_child(el, "Properties")
+                indexing_el = _direct_child(props, "Indexing") if props is not None else None
+                indexing_value = indexing_el.text if indexing_el is not None else None
+
+                if tag == "Dimension":
+                    is_leading = dimension_seen == 0
+                    dimension_seen += 1
+                    if is_leading:
+                        indexed_fields.append({"field": name, "kind": "dimension", "reason": "leading_dimension"})
+                    elif indexing_value in _INDEXED_VALUES:
+                        indexed_fields.append({"field": name, "kind": "dimension", "reason": indexing_value})
+                elif indexing_value in _INDEXED_VALUES:
+                    indexed_fields.append({
+                        "field": name,
+                        "kind": "resource" if tag == "Resource" else "attribute",
+                        "reason": indexing_value,
+                    })
+        except Exception:
+            pass
+        if indexed_fields:
+            result["indexed_fields"] = indexed_fields
+        return result
+
+    try:
+        tree = etree.parse(str(xml_path))
+        root = tree.getroot()
+        object_el = next(iter(root), None)
+        props = _direct_child(object_el, "Properties") if object_el is not None else None
+    except Exception:
+        props = None
+
+    auto_fields: list[str] = []
+    if obj_type in CONDITIONAL_CODE_NAME_TYPES:
+        auto_fields.append("Ссылка")
+        if props is not None:
+            if _int_prop(props, "CodeLength") != 0:
+                auto_fields.append("Код")
+            if _int_prop(props, "DescriptionLength") != 0:
+                auto_fields.append("Наименование")
+    elif obj_type in ALWAYS_CODE_NAME_TYPES:
+        auto_fields = ["Ссылка", "Код", "Наименование"]
+    elif obj_type in DOCUMENT_LIKE_TYPES:
+        auto_fields = ["Ссылка", "Дата"]
+        if obj_type == "Tasks":
+            auto_fields.append("Наименование")
+        if props is not None and _int_prop(props, "NumberLength") != 0:
+            auto_fields.append("Номер")
+
+    if auto_fields:
+        result["auto_indexed_fields"] = auto_fields
+
+    return result
+
+
 MAX_FORM_SUMMARY_LEN = 4000
 MAX_FORM_ELEMENTS = 60
 
@@ -287,14 +405,16 @@ def index_config(
             obj_name = item.name
             xml_path = type_dir / f"{obj_name}.xml"
             xml_summary = extract_xml_summary(xml_path) if xml_path.exists() else ""
+            index_info = extract_index_info(xml_path, obj_type) if xml_path.exists() else {}
 
             conn.execute(
                 """INSERT OR REPLACE INTO objects
-                   (config_name, obj_type, obj_name, xml_path, xml_summary)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (config_name, obj_type, obj_name, xml_path, xml_summary, index_info)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (config_name, obj_type, obj_name,
                  str(xml_path) if xml_path.exists() else None,
-                 xml_summary),
+                 xml_summary,
+                 json.dumps(index_info, ensure_ascii=False) if index_info else None),
             )
             obj_id = conn.execute(
                 "SELECT id FROM objects WHERE config_name=? AND obj_type=? AND obj_name=?",

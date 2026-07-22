@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 
@@ -544,8 +545,11 @@ def get_object_metadata(conn: sqlite3.Connection, args: dict) -> dict | list[dic
             "SELECT module_type, form_name, line_count, xml_summary FROM modules WHERE object_id = ? ORDER BY module_type",
             (obj["id"],),
         ).fetchall()
+        obj_dict = dict(obj)
+        raw_index_info = obj_dict.pop("index_info", None)
+        obj_dict["index_info"] = json.loads(raw_index_info) if raw_index_info else None
         results.append({
-            **dict(obj),
+            **obj_dict,
             "modules": [dict(m) for m in modules],
         })
 

@@ -9,6 +9,7 @@ _DDL = [
         obj_name    TEXT NOT NULL,
         xml_path    TEXT,
         xml_summary TEXT,
+        index_info  TEXT,
         UNIQUE(config_name, obj_type, obj_name)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_objects_name ON objects(obj_name)",
@@ -87,10 +88,28 @@ _DROP_TRIGGERS = [
 ]
 
 
+def _migrate_index_info(conn: sqlite3.Connection) -> None:
+    tables = {row["name"] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='objects'"
+    )}
+    if not tables:
+        return  # fresh DB, _DDL will create the up-to-date schema
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(objects)")}
+    if "index_info" in columns:
+        return  # already migrated
+
+    conn.execute("ALTER TABLE objects ADD COLUMN index_info TEXT")
+    # Existing rows have no index_info; force a full reindex of every config
+    # so it gets populated.
+    conn.execute("DELETE FROM index_runs")
+
+
 def ensure_schema(db_path: str) -> None:
     conn = get_connection(db_path)
     for stmt in _DROP_TRIGGERS:
         conn.execute(stmt)
+    _migrate_index_info(conn)
     for stmt in _DDL:
         conn.execute(stmt)
     conn.commit()
