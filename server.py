@@ -201,7 +201,7 @@ TOOL_DEFS = [
     ),
     types.Tool(
         name="find_procedure",
-        description="Найти определение процедуры или функции по имени (Процедура/Функция ИмяМетода(). Возвращает номер строки.",
+        description="Найти определение процедуры или функции по имени (Процедура/Функция ИмяМетода(). Возвращает номер строки и признак устаревания (is_deprecated, deprecated_since_region, deprecated_alternatives).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -230,7 +230,7 @@ TOOL_DEFS = [
     ),
     types.Tool(
         name="get_procedure_body",
-        description="Получить исходный текст тела процедуры/функции по точному имени, без чтения всего модуля.",
+        description="Получить исходный текст тела процедуры/функции по точному имени, без чтения всего модуля. Возвращает признак устаревания (is_deprecated, deprecated_since_region, deprecated_alternatives).",
         inputSchema={
             "type": "object",
             "properties": {

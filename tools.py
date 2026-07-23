@@ -270,8 +270,8 @@ def find_procedure(conn: sqlite3.Connection, args: dict) -> list[dict]:
         if file_path in seen:
             continue
 
-        content = r["content"]
-        for line_no, line in enumerate(content.splitlines(), start=1):
+        lines = r["content"].splitlines()
+        for idx, line in enumerate(lines):
             if pattern.search(line):
                 results.append({
                     "config_name": r["config_name"],
@@ -280,13 +280,81 @@ def find_procedure(conn: sqlite3.Connection, args: dict) -> list[dict]:
                     "module_type": r["module_type"],
                     "form_name": r["form_name"],
                     "file_path": file_path,
-                    "definition_line": line_no,
+                    "definition_line": idx + 1,
                     "context": line.strip(),
+                    **_deprecation_info(lines, idx),
                 })
                 seen.add(file_path)
                 break
 
     return results
+
+
+_REGION_START_RE = re.compile(r"^\s*#Область\s+(\S+)", re.IGNORECASE)
+_REGION_END_RE = re.compile(r"^\s*#КонецОбласти\b", re.IGNORECASE)
+_DEPRECATED_REGION_NAME = "устаревшиепроцедурыифункции"
+
+_DEPRECATED_FIRST_LINE_RE = re.compile(r"^\s*Устарела\.\s*", re.IGNORECASE)
+_DEPRECATED_ALT_RE = re.compile(r"^\s*(?:Следует использовать|См\.)\s+(.*\S)\s*$", re.IGNORECASE)
+
+
+def _in_deprecated_region(lines: list[str], idx: int) -> bool:
+    stack = []
+    for line in lines[:idx]:
+        m = _REGION_START_RE.match(line)
+        if m:
+            stack.append(m.group(1).strip().lower())
+            continue
+        if _REGION_END_RE.match(line) and stack:
+            stack.pop()
+    return _DEPRECATED_REGION_NAME in stack
+
+
+def _comment_block_above(lines: list[str], start_idx: int) -> list[str]:
+    # The comment block belonging to a definition sits directly above it,
+    # separated only by blank lines.
+    i = start_idx - 1
+    while i >= 0 and lines[i].strip() == "":
+        i -= 1
+    end = i
+    if end < 0 or not lines[end].strip().startswith("//"):
+        return []
+    start = end
+    while start - 1 >= 0 and lines[start - 1].strip().startswith("//"):
+        start -= 1
+    return lines[start:end + 1]
+
+
+def _deprecation_info(lines: list[str], start_idx: int) -> dict:
+    block = _comment_block_above(lines, start_idx)
+    stripped = [line.strip().lstrip("/").strip() for line in block]
+
+    since_region = _in_deprecated_region(lines, start_idx)
+    since_comment = bool(stripped) and _DEPRECATED_FIRST_LINE_RE.match(stripped[0]) is not None
+
+    remainder = []
+    if since_comment:
+        remainder.append(_DEPRECATED_FIRST_LINE_RE.sub("", stripped[0], count=1))
+        remainder.extend(stripped[1:])
+
+    # "Следует использовать X." / "См. Y." lines run consecutively right
+    # after "Устарела." - stop at the first line that isn't one of those
+    # (e.g. the method's regular description that follows).
+    alternatives = []
+    for line in remainder:
+        line = line.strip()
+        if not line:
+            continue
+        m = _DEPRECATED_ALT_RE.match(line)
+        if not m:
+            break
+        alternatives.append(m.group(1).rstrip("."))
+
+    return {
+        "is_deprecated": since_comment or since_region,
+        "deprecated_since_region": since_region,
+        "deprecated_alternatives": alternatives,
+    }
 
 
 def _definition_pattern(proc_name: str) -> re.Pattern:
@@ -354,6 +422,7 @@ def _extract_procedure_bodies(
             "start_line": start_idx + 1,
             "end_line": end_idx + 1,
             "body": "\n".join(lines[start_idx:end_idx + 1]),
+            **_deprecation_info(lines, start_idx),
         })
         seen.add(file_path)
 
