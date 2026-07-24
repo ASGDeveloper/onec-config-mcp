@@ -58,6 +58,14 @@ def _resolve_object_types(spec) -> set[str]:
         return OBJECT_TYPES
     if spec == "base":
         return BASE_OBJECT_TYPES
+    if isinstance(spec, str):
+        raise ValueError(
+            f"object_types: неверный формат {spec!r} — ожидается 'all', 'base' "
+            f"или список типов, например [\"Catalogs\", \"CommonModules\"]"
+        )
+    unknown = set(spec) - OBJECT_TYPES
+    if unknown:
+        raise ValueError(f"object_types: неизвестные типы {sorted(unknown)}")
     return set(spec)
 
 
