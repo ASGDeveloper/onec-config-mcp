@@ -320,12 +320,15 @@ def main() -> None:
     log.info(f"Server starting, db_path={_db_path}")
     db.ensure_schema(_db_path)
 
-    if _acquire_singleton_lock():
-        _startup_reindex(_config["configs"])
-        _start_watchers(_config["configs"])
-        log.info("Server ready (primary instance, watching for changes)")
-    else:
-        log.info("Server ready (secondary instance, another process already watches for changes)")
+    def _background_init():
+        if _acquire_singleton_lock():
+            _startup_reindex(_config["configs"])
+            _start_watchers(_config["configs"])
+            log.info("Server ready (primary instance, watching for changes)")
+        else:
+            log.info("Server ready (secondary instance, another process already watches for changes)")
+
+    threading.Thread(target=_background_init, daemon=True).start()
 
     async def _run():
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
