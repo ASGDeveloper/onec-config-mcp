@@ -102,6 +102,12 @@ def find_object(conn: sqlite3.Connection, args: dict) -> list[dict]:
 
 MAX_AVAILABLE_MODULES_LISTED = 30
 
+# Agents naturally guess module_type from the object type name (obj_type=
+# "CommonModules" -> module_type="CommonModule"), but the stored module_type
+# reflects the on-disk .bsl filename ("Module.bsl" -> "Module"). Normalize
+# known aliases so those guesses still resolve.
+_MODULE_TYPE_ALIASES = {"CommonModule": "Module"}
+
 
 def _find_modules_or_error(
     conn: sqlite3.Connection,
@@ -117,6 +123,7 @@ def _find_modules_or_error(
     and in the latter case lists the module_type/form_name combos that do exist,
     so a wrong value (e.g. module_type="Form" instead of "FormModule") is
     diagnosable from the error alone."""
+    module_type = _MODULE_TYPE_ALIASES.get(module_type, module_type)
     filters = ["o.obj_name = ?"]
     params: list = [obj_name]
     if config_name:
